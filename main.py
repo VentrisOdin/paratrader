@@ -1,14 +1,18 @@
 # main.py
+
 import os
 import requests
+import pandas as pd
 from dotenv import load_dotenv
+from data.fetch import fetch_candles
+from strategy.macd import calculate_macd, detect_crossovers
 
+# Load environment variables
 load_dotenv()
 
 API_KEY = os.getenv("OANDA_API_KEY")
 ACCOUNT_ID = os.getenv("OANDA_ACCOUNT_ID")
 ACCOUNT_TYPE = os.getenv("OANDA_ACCOUNT_TYPE")  # Should be fxpractice or fxtrade
-
 BASE_URL = f"https://api-{ACCOUNT_TYPE}.oanda.com/v3"
 
 def get_account_info():
@@ -30,4 +34,15 @@ def get_account_info():
         print(response.text)
 
 if __name__ == "__main__":
+    # Step 1: Test OANDA account connection
     get_account_info()
+
+    # Step 2: Fetch historical candle data
+    df = fetch_candles(instrument="EUR_USD", count=300, granularity="H1")
+    
+    # Step 3: Run MACD analysis
+    df = calculate_macd(df)
+    df = detect_crossovers(df)
+
+    # Step 4: Print results
+    print(df[["time", "close", "MACD", "Signal", "Crossover", "Crossunder"]].tail(10))
