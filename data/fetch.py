@@ -1,29 +1,64 @@
-# data/fetch.py
-
 import requests
-import pandas as pd
 import os
+from dotenv import load_dotenv
 
-def fetch_candles(instrument="EUR_USD", count=300, granularity="H1"):
-    url = f"{os.getenv('OANDA_API_URL')}/instruments/{instrument}/candles"
+# Load environment variables
+load_dotenv()
+
+OANDA_API_URL = os.getenv('OANDA_API_URL')
+OANDA_API_KEY = os.getenv('OANDA_API_KEY')
+OANDA_ACCOUNT_ID = os.getenv('OANDA_ACCOUNT_ID')
+
+def fetch_instruments():
+    url = f"{OANDA_API_URL}/v3/accounts/{OANDA_ACCOUNT_ID}/instruments"
     headers = {
-        "Authorization": f"Bearer {os.getenv('OANDA_API_KEY')}"
+        "Authorization": f"Bearer {OANDA_API_KEY}"
+    }
+
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+        return [instrument['name'] for instrument in data.get("instruments", [])]
+
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Error fetching instruments: {e}")
+        return []
+
+def fetch_prices(instruments):
+    url = f"{OANDA_API_URL}/v3/accounts/{OANDA_ACCOUNT_ID}/pricing"
+    headers = {
+        "Authorization": f"Bearer {OANDA_API_KEY}"
     }
     params = {
-        "count": count,
-        "granularity": granularity,
-        "price": "M"
+        "instruments": ','.join(instruments)
     }
-    r = requests.get(url, headers=headers, params=params)
-    data = r.json()["candles"]
 
-    df = pd.DataFrame([{
-        "time": c["time"],
-        "open": float(c["mid"]["o"]),
-        "high": float(c["mid"]["h"]),
-        "low": float(c["mid"]["l"]),
-        "close": float(c["mid"]["c"]),
-    } for c in data if c["complete"]])
+    try:
+        response = requests.get(url, headers=headers, params=params)
+        response.raise_for_status()
+        data = response.json()
 
-    df["time"] = pd.to_datetime(df["time"])
-    return df
+        prices = data.get("prices", [])
+        if not prices:
+            print("No price data returned.")
+            return
+
+        for p in prices:
+            instrument = p["instrument"]
+            bids = p.get("bids", [])
+            asks = p.get("asks", [])
+            bid = float(bids[0]["price"]) if bids else None
+            ask = float(asks[0]["price"]) if asks else None
+            mid = (bid + ask) / 2 if bid and ask else None
+
+            print(f"{instrument}: Bid={bid}, Ask={ask}, Mid={mid}")
+
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Error fetching pricing: {e}")
+
+if __name__ == "__main__":
+    instrument_list = fetch_instruments()
+    if instrument_list:
+        fetch_prices(instrument_list)
