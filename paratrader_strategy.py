@@ -6,6 +6,7 @@ import numpy as np
 import oandapyV20
 import oandapyV20.endpoints.orders as orders
 import oandapyV20.endpoints.instruments as instruments
+import oandapyV20.endpoints.accounts as accounts  # make sure this import is at the top
 from dotenv import load_dotenv
 
 # --- Load .env credentials ---
@@ -83,22 +84,37 @@ def is_bearish_divergence(df):
 
 
 # --- OANDA Order Placement ---
-def place_bid(pair, units, order_type="MARKET", side="BUY"):
+def place_bid(pair, units, order_type="MARKET", side="BUY", trailing_stop_pips=10):
+    """
+    Places a market order with optional trailing stop-loss.
+
+    :param pair: Currency pair
+    :param units: Lot size
+    :param order_type: Order type
+    :param side: BUY or SELL
+    :param trailing_stop_pips: Distance for trailing SL
+    """
+    direction_units = units if side == "BUY" else -units
+
     order_data = {
         "order": {
-            "units": units if side == "BUY" else -units,
+            "units": direction_units,
             "instrument": pair,
             "timeInForce": "FOK",
             "type": order_type,
-            "positionFill": "DEFAULT"
+            "positionFill": "DEFAULT",
+            "trailingStopLossOnFill": {
+                "distance": str(trailing_stop_pips * 0.0001)  # convert pips to price units
+            }
         }
     }
 
     try:
         response = client.request(orders.OrderCreate(ACCOUNT_ID, data=order_data))
-        print(f"✅ Order placed: {response}")
+        print(f"✅ Order with trailing stop placed: {response}")
     except oandapyV20.exceptions.V20Error as e:
         print(f"❌ Order error: {e}")
+
 
 
 # --- Trade Monitoring Logic ---
@@ -140,10 +156,22 @@ def manage_trade(pair, entry_price):
 
         time.sleep(60)
 
+import oandapyV20.endpoints.accounts as accounts  # make sure this import is at the top
+
+def get_forex_pairs():
+    try:
+        request = accounts.AccountInstruments(accountID=ACCOUNT_ID)
+        response = client.request(request)
+        instruments = response.get("instruments", [])
+        return [i['name'] for i in instruments if i['type'] == "CURRENCY"]
+    except Exception as e:
+        print(f"Error fetching forex pairs: {e}")
+        return ['EUR_USD', 'GBP_USD', 'USD_JPY']  # fallback
 
 # --- Strategy Runner ---
 def run_strategy():
-    forex_pairs = ['EUR_USD', 'GBP_USD', 'USD_JPY']  # You can expand this list
+    forex_pairs = get_forex_pairs()
+    print(f"🧭 Scanning {len(forex_pairs)} currency pairs...")
 
     for pair in forex_pairs:
         print(f"\n📊 Checking {pair}")
@@ -159,8 +187,14 @@ def run_strategy():
         if bullish_cross and is_bullish_divergence(df):
             print(f"📈 Entry signal on {pair}")
             entry_price = df['close'].iloc[-1]
-            place_bid(pair, 1000, side="BUY")
+            place_bid(pair, 1000, side="BUY", trailing_stop_pips=10)
             manage_trade(pair, entry_price)
+           
+
+
+
+              # or whatever value fits your fib scalemanage_trade(pair, entry_price)
+
         else:
             print(f"❌ No entry signal on {pair}")
 
