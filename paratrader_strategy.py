@@ -5,8 +5,10 @@ from ta.trend import MACD
 import numpy as np
 import oandapyV20
 import oandapyV20.endpoints.orders as orders
+import oandapyV20.endpoints.positions as positions
 import oandapyV20.endpoints.instruments as instruments
-import oandapyV20.endpoints.accounts as accounts  # make sure this import is at the top
+import oandapyV20.endpoints.accounts as accounts
+import oandapyV20.endpoints.trades as trades  # Import the correct endpoint  # make sure this import is at the top
 from dotenv import load_dotenv
 import threading
 
@@ -55,18 +57,25 @@ def is_bullish_divergence(df):
     df['macd'] = macd.macd()
     df['signal'] = macd.macd_signal()
 
-    valleys = df['close'][(df['close'].shift(1) > df['close']) &
-                          (df['close'].shift(-1) > df['close'])]
+    df['valley'] = (df['close'].shift(1) > df['close']) & (df['close'].shift(-1) > df['close'])
+
+    valleys = df[df['valley']]
 
     if len(valleys) < 2:
         return False
 
-    v1, v2 = valleys.index[-2], valleys.index[-1]
-    price_making_lower_lows = df['close'][v2] < df['close'][v1]
-    macd_making_higher_lows = df['macd'][v2] > df['macd'][v1]
+    # Get the last two valleys
+    v1_idx = valleys.index[-2]
+    v2_idx = valleys.index[-1]
 
-    return price_making_lower_lows and macd_making_higher_lows
+    price_lower_low = df.loc[v2_idx, 'close'] < df.loc[v1_idx, 'close']
+    macd_higher_low = df.loc[v2_idx, 'macd'] > df.loc[v1_idx, 'macd']
 
+    # Additional condition: MACD must be below zero and turning up
+    macd_below_zero = df.loc[v2_idx, 'macd'] < 0
+    macd_crossing_up = df['macd'].iloc[-1] > df['signal'].iloc[-1]
+
+    return price_lower_low and macd_higher_low and macd_below_zero and macd_crossing_up
 
 def is_bearish_divergence(df):
     macd = MACD(close=df['close'])
@@ -116,6 +125,27 @@ def place_bid(pair, units, order_type="MARKET", side="BUY", trailing_pips=25, ta
     except oandapyV20.exceptions.V20Error as e:
         print(f"❌ Order error for {pair}: {e}")
 
+def sell_position(instrument, units):
+    """Close a position for a specific instrument."""
+    url = f"{OANDA_API_URL}/accounts/{OANDA_ACCOUNT_ID}/orders"
+    headers = {
+        "Authorization": f"Bearer {OANDA_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "order": {
+            "instrument": instrument,
+            "units": str(-units),  # Negative units to sell
+            "type": "MARKET",
+            "positionFill": "REDUCE_ONLY"
+        }
+    }
+    response = requests.post(url, headers=headers, json=data)
+    if response.status_code != 200:
+        print(f"Error selling position for {instrument}: {response.status_code} - {response.text}")
+    else:
+        print(f"Sold position for {instrument}: {response.json()}")
+
 # --- Trade Monitoring Logic ---
 def manage_trade(pair, entry_price):
     tp_price = entry_price + 3 * FIB_UNIT
@@ -151,6 +181,7 @@ def manage_trade(pair, entry_price):
 
         if macd_bearish and is_bearish_divergence(df):
             print(f"⚠️ Early Exit: Bearish MACD & divergence at {current_price:.5f}")
+        
             break
 
         time.sleep(60)
@@ -167,36 +198,57 @@ def get_forex_pairs():
         print(f"Error fetching forex pairs: {e}")
         return ['EUR_USD', 'GBP_USD', 'USD_JPY']  # fallback
 
-# --- Strategy Runner ---
+def get_open_trade_pairs():
+    try:
+        request = oandapyV20.endpoints.positions.OpenPositions(accountID=ACCOUNT_ID)
+        response = client.request(request)
+        open_positions = response.get("positions", [])
+        return [pos['instrument'] for pos in open_positions]
+    except Exception as e:
+        print(f"⚠️ Error fetching open trades: {e}")
+        return []
+
 def run_strategy():
-    forex_pairs = get_forex_pairs()
-    print(f"🧭 Scanning {len(forex_pairs)} currency pairs...")
+    while True:
+        forex_pairs = get_forex_pairs()
+        print(f"\n🧭 Scanning {len(forex_pairs)} currency pairs...")
 
-    for pair in forex_pairs:
-        print(f"\n📊 Checking {pair}")
-        df = get_candles(pair)
-        if df is None or df.empty:
-            continue
+        open_pairs = get_open_trade_pairs()
 
-        macd = MACD(close=df['close'])
-        df['macd'] = macd.macd()
-        df['signal'] = macd.macd_signal()
-        bullish_cross = df['macd'].iloc[-1] > df['signal'].iloc[-1]
+        for pair in forex_pairs:
+            print(f"\n📊 Checking {pair}")
 
-        if bullish_cross and is_bullish_divergence(df):
-            print(f"📈 Entry signal on {pair}")
-            entry_price = df['close'].iloc[-1]
-            place_bid(pair, 1000, side="BUY", trailing_pips=25, take_profit_pips=75)
-            threading.Thread(target=manage_trade, args=(pair, entry_price), daemon=True).start()
-           
+            if pair in open_pairs:
+                print(f"⏭️ Skipping {pair}, already has an open trade")
+                df = get_candles(pair)
+                if df is None or df.empty:
+                    continue
 
+                # Check for bearish divergence in open positions
+                if is_bearish_divergence(df):
+                    print(f"⚠️ Bearish divergence detected on {pair}, closing position")
+                    units = get_position_units(pair)  # Fetch the open position size for the pair
+                    sell_position(pair, units)  # Close the open position
+                continue  # Skip checking for entry signals for pairs with open positions
 
+            # Entry logic (MACD bullish cross + bullish divergence)
+            df = get_candles(pair)
+            if df is None or df.empty:
+                continue
 
-              # or whatever value fits your fib scalemanage_trade(pair, entry_price)
+            macd = MACD(close=df['close'])
+            df['macd'] = macd.macd()
+            df['signal'] = macd.macd_signal()
+            bullish_cross = df['macd'].iloc[-1] > df['signal'].iloc[-1]
 
-        else:
-            print(f"❌ No entry signal on {pair}")
+            if bullish_cross and is_bullish_divergence(df):
+                print(f"📈 Entry signal on {pair}")
+                entry_price = df['close'].iloc[-1]
+                place_bid(pair, 1000, side="BUY", trailing_pips=25, take_profit_pips=75)
+                threading.Thread(target=manage_trade, args=(pair, entry_price), daemon=True).start()
 
+        print("⏳ Sleeping for 15 minutes before next scan...\n")
+        time.sleep(900)  # 15 minutes
 
 # --- Run the bot ---
 if __name__ == "__main__":
