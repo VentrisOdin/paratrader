@@ -7,7 +7,7 @@ from divergence import track_divergence
   
 # Load environment variables from .env file
 load_dotenv()
-
+# add lines for git upload
 # OANDA API credentials
 API_KEY = os.getenv("OANDA_API_KEY")
 BASE_URL = "https://api-fxpractice.oanda.com/v3"

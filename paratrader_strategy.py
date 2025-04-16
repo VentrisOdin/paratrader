@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 import threading
 
 
+
 # --- Load .env credentials ---
 load_dotenv()
 ACCESS_TOKEN = os.getenv("OANDA_API_KEY")
