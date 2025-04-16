@@ -8,6 +8,8 @@ import oandapyV20.endpoints.orders as orders
 import oandapyV20.endpoints.instruments as instruments
 import oandapyV20.endpoints.accounts as accounts  # make sure this import is at the top
 from dotenv import load_dotenv
+import threading
+
 
 # --- Load .env credentials ---
 load_dotenv()
@@ -84,38 +86,35 @@ def is_bearish_divergence(df):
 
 
 # --- OANDA Order Placement ---
-def place_bid(pair, units, order_type="MARKET", side="BUY", trailing_stop_pips=10):
-    """
-    Places a market order with optional trailing stop-loss.
-
-    :param pair: Currency pair
-    :param units: Lot size
-    :param order_type: Order type
-    :param side: BUY or SELL
-    :param trailing_stop_pips: Distance for trailing SL
-    """
+def place_bid(pair, units, order_type="MARKET", side="BUY", trailing_pips=25, take_profit_pips=75):
     direction_units = units if side == "BUY" else -units
+    pip_value = 0.01 if "JPY" in pair else 0.0001
 
-    order_data = {
-        "order": {
-            "units": direction_units,
-            "instrument": pair,
-            "timeInForce": "FOK",
-            "type": order_type,
-            "positionFill": "DEFAULT",
-            "trailingStopLossOnFill": {
-                "distance": str(trailing_stop_pips * 0.0001)  # convert pips to price units
-            }
+    trailing_distance = round(trailing_pips * pip_value, 5)
+    entry_price = get_candles(pair)['close'].iloc[-1]  # Get current price
+    tp_price = round(entry_price + (take_profit_pips * pip_value), 5) if side == "BUY" else round(entry_price - (take_profit_pips * pip_value), 5)
+
+    order_body = {
+        "units": direction_units,
+        "instrument": pair,
+        "timeInForce": "FOK",
+        "type": order_type,
+        "positionFill": "DEFAULT",
+        "trailingStopLossOnFill": {
+            "distance": str(trailing_distance)
+        },
+        "takeProfitOnFill": {
+            "price": str(tp_price)
         }
     }
 
+    order_data = { "order": order_body }
+
     try:
         response = client.request(orders.OrderCreate(ACCOUNT_ID, data=order_data))
-        print(f"✅ Order with trailing stop placed: {response}")
+        print(f"✅ Order placed for {pair}: TP at {tp_price}, trailing stop {trailing_pips} pips ({trailing_distance})")
     except oandapyV20.exceptions.V20Error as e:
-        print(f"❌ Order error: {e}")
-
-
+        print(f"❌ Order error for {pair}: {e}")
 
 # --- Trade Monitoring Logic ---
 def manage_trade(pair, entry_price):
@@ -187,8 +186,8 @@ def run_strategy():
         if bullish_cross and is_bullish_divergence(df):
             print(f"📈 Entry signal on {pair}")
             entry_price = df['close'].iloc[-1]
-            place_bid(pair, 1000, side="BUY", trailing_stop_pips=10)
-            manage_trade(pair, entry_price)
+            place_bid(pair, 1000, side="BUY", trailing_pips=25, take_profit_pips=75)
+            threading.Thread(target=manage_trade, args=(pair, entry_price), daemon=True).start()
            
 
 
